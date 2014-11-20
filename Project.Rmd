@@ -1,0 +1,234 @@
+---
+title: "Machine Learning Project"
+author: "Pilar"
+date: "Sunday, November 16, 2014"
+output: html_document
+---
+
+# Synopsis
+
+The goal of this project is *to predict* the manner in wich a group of enthusiasts did the exercise. For it we use data from accelerometers on the belt, forearm, arm and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+My strategy consists in building 2 models and compare them. This comparison will be centered on the accuracy level. The first model use the   *Principal Component Analysis* tool,  because some of predictors are highly correlated with each other. The second model use the subset of the training data , that in a previous step I splitted in two parts.
+
+In both cases (models), I use the *random forest* technique, because is one of the accurate learning algorithms. Also I use *cross validation* as a type of resampling.
+
+
+# Data Processing
+
+## Loading and Reading Data
+
+```{r}
+library(lattice)
+library(ggplot2)
+library(caret)
+library(randomForest)
+library(AppliedPredictiveModeling)
+setwd("F:/Practical Machine Learning/Project")
+if (!file.exists("pml-training.csv")){
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile="pml-training.csv", method="curl")
+    }
+
+if (!file.exists("pml-testing.csv")){
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile="pml-testing.csv", method="curl")
+    }
+
+training<-read.csv("pml-training.csv", na.strings=c("NA", ""), header=TRUE)
+testing<-read.csv("pml-testing.csv", na.strings=c("NA", ""), header=TRUE)
+dim(training) 
+dim(testing) 
+```
+
+As you can see from the above information, the number of variables is 160. We try to reduce them. 
+
+## Cleaning Data
+
+I remove all the columns of training and testing  which NA values represents more than 90% of the total.
+
+```{r}
+## Removing columns from training
+for(data in training) {
+  columns_to_delete <- NULL
+ 
+### find columns threshold
+  threshold_columns <- floor(nrow(training)*0.1)
+
+### find columns to delete
+  valuecount_columns <- colSums(!is.na(training))
+  columns_to_delete <- sort(which(valuecount_columns < threshold_columns), decreasing = TRUE)
+
+ ### delete columns with less than x values  
+  for(column_id in columns_to_delete) {
+    training[column_id] <- NULL
+    }
+}
+
+dim(training)
+
+## Removing columns from testing
+for(data in testing) {
+  columns_to_delete <- NULL
+    
+### find columns threshold
+  threshold_columns <- floor(nrow(testing)*0.1)
+
+### find columns to delete
+  valuecount_columns <- colSums(!is.na(testing))
+  columns_to_delete <- sort(which(valuecount_columns < threshold_columns), decreasing = TRUE)
+  
+### delete columns with less than x values  
+  for(column_id in columns_to_delete) {
+    testing[column_id] <- NULL
+    }
+}
+dim(testing) 
+```
+
+Comparing if the columns of training are the same that the columns of testing, except the last column, that in *testing data set*  is *problem_id* and in *training data set* is *classe*. 
+
+```{r}
+colnamesTrain<-colnames(training)
+colnamesTest<-colnames(testing)
+all.equal(colnamesTest[1:length(colnamesTest)-1], colnamesTrain[1:length(colnamesTrain)-1])
+```
+
+I delete the first seven columns related with variables like: *index*, *username*, *times* and *window*. 
+
+```{r}
+training<- training[, 8:length(colnames(training))]
+dim(training) 
+
+testing<- testing[, 8:length(colnames(testing))]
+dim(testing) 
+```
+
+Finally we have only 53 variables, 52 of them will be use  to build the model and the remaining will be the outcome variable. 
+
+# Modeling
+
+Split the *training set* into *training/testing sets*. Then build a model on the *training set* as subset of our oringinal *training set*. After that evaluate on the *test set* as subset of our original *training set*. 
+
+## Removing zero covariates
+
+Now we try to identify variables with zero variation. This variables are not useful for building the model and we will proceed to remove them.
+
+```{r}
+nsv<-nearZeroVar(training, saveMetrics=TRUE)
+nsvDrop<- nsv[nsv$nzv==TRUE, ]
+namesDrop<-rownames(nsvDrop)
+newTraining<-training[, !((colnames(training)%in% namesDrop))]
+dim(newTraining) 
+```
+
+There isn't any covariates.
+
+## Data Splitting 
+
+I split the *training data set* using random subsampling without replacement.In order to be *reproducible* I set a *specific seed*
+
+```{r}
+set.seed(1235)
+inTrain<-createDataPartition(y=newTraining$classe, p=0.75, list=FALSE)
+myTraining<-newTraining[inTrain,]
+myTesting<-newTraining[-inTrain,]
+dim(myTraining) 
+dim(myTesting)  
+summary(myTraining$classe)
+plot(myTraining$classe, col="orange", main="myTraining: Frequency of Classe Levels", xlab="classe levels", ylab="Frequency")
+```
+
+The *classe level A* is the most frequently.
+
+## Model 1: PCA, Cross Validation and Random Forest
+
+First at all I calculated the correlation between the variables. Then I applied *Principal Components Analysis* technique to reduce the number of the predictors. After that I  build a model using *Rrandom Forest* technique and *cross validation* method of resampling. Finally testing the model.
+
+### Correlated predictors
+
+```{r}
+M <- abs(cor(myTraining[, -53]))
+diag(M)<-0
+corTab<-which(M>0.8, arr.ind=TRUE)
+dim(corTab)
+```
+
+There are some variables highly correlated with each other, that is why I decide to apply *Principal Components Analysis* tool.
+
+### Principal Components Analysis
+
+```{r}
+preProc<-preProcess(myTraining[, -53], method="pca")
+trainPC<-predict(preProc, myTraining[, -53])
+dim(trainPC) 
+testPC<-predict(preProc, myTesting[, -53])
+dim(testPC) 
+```
+
+PCA needs 25 components of *myTraining data set* to capture 95 percent of the variance.
+
+### Random Forest and Cross Validation
+
+I will apply  the technique of Random Forest modeling to predict the classe. I will use the PCA data set: *trainPC* for training the model, and *testPC* for testing. 
+
+```{r}
+
+fitControl<-trainControl(method = "cv", number = 5)
+modelFit<-train(myTraining$classe~., method="rf", trControl = fitControl, prox=TRUE, ntree=100, data=trainPC)
+modelFit$finalModel
+
+## accuracy and expected out-of-sample error
+conMat<-confusionMatrix(myTesting$classe, predict(modelFit, testPC))
+accur<-round(conMat$overall[1], 2)
+accur
+expErrorOS<-round((1-accur), 4) 
+expErrorOS
+```
+
+The *accuracy* of this model is **`r accur`**. The *accuracy* measures the *correct* predictions against the number of total  predictions. Meanwhile  *expected out-of-sample error* measures the number of *incorrect* predictions against the number of total predictions.  That is why,  *expected out-of-sample error* is **`r expErrorOS`**.
+
+## Model 2: Random Forest and Testing
+
+These model is building with all the variables in *myTraining* data set. I will apply  the technique of Random Forest modeling to predict the classe. I will use *myTraining data set* for training the model, and *myTesting* for testing. 
+
+```{r}
+
+fitControl<-trainControl(method = "cv", number = 5)
+modelFit1<-train(myTraining$classe~., method="rf", trControl = fitControl, prox=TRUE, ntree=50, data=myTraining)
+modelFit1$finalModel
+
+## accuracy and expected out-of-sample error
+conMat1<-confusionMatrix(myTesting$classe, predict(modelFit1, myTesting))
+accur1<-round(conMat1$overall[1], 2)
+accur1
+expErrorOS1<-round(1-accur1, 4)  ## expected out-of-sample error
+expErrorOS1
+```
+
+The *accuracy* of this model is **`r accur1`**. Meanwhile *expected out-of-sample error* is **`r expErrorOS1`**,  very low. Then I expect that the number of *incorrect* predictions against the total number predictions will be very few.
+
+## Compare Models
+
+Now I compare both Models (modelFit and modelFit1) using the *accuracy level*
+
+```{r}
+difAccur<-accur1-accur
+difAccur
+difAccurPerc<-round(difAccur*100, 2)
+```
+
+The level of accuracy in *modelFit1* is a little greater,  that is why  I decided to choose *modelFit1*
+
+# Prediction 
+
+I use *ModelFit1* and *testing data set* to predict the classe. With a very low *out-of-sample error* and with n=20 classes in our *testing data set*, we expect *very few or none incorrect* classe predictions.
+
+```{r}
+predictTest<- predict(modelFit1, testing[, -53])
+predictTest
+```
+
+# References:
+
+International Journal for Infonomics (IJI), Volume 3, Issue 3, September 2010 
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
